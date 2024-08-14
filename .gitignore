@@ -23,6 +23,7 @@ build
 *.jld2
 examples/OceanBioME_example_data/*
 examples/OceanBioME_example_data
+output
 # Checkpointer model serialization
 *.jlser
 *.jld
