@@ -5,9 +5,8 @@ using OceanBioME.Models: teos10_density, teos10_polynomial_approximation
 using OceanBioME.Models.CarbonChemistryModel: K0, K1, K2, KF
 
 
-
 # get the glodap data - downloaded "merged" file from https://www.ncei.noaa.gov/data/oceans/ncei/ocads/data/0283442/
-data = CSV.read("validation/GLODAP.csv", DataFrame)
+data = CSV.read("glodap/GLODAP.csv", DataFrame)
 
 DIC_name = "G2tco2"
 Alk_name = "G2talk"
@@ -116,7 +115,7 @@ function plot_errors(; subset = :,
                        color_marker = data[:, color_name][subset],
                        limit_y = false,
                        ylim = 100)
-    fig = Figure();
+    fig = Figure(; size = (1800, 1200));
 
     ax = Axis(fig[1, 1], title = "DIC")#, aspect = DataAspect(), title = "Local grid")
     ax2 = Axis(fig[1, 2], title = "Alk")
@@ -142,3 +141,5 @@ function plot_errors(; subset = :,
 
     return fig
 end
+
+plot_errors(; to_plot = pCO₂_error)
