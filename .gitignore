@@ -26,6 +26,7 @@ examples/OceanBioME_example_data
 # Checkpointer model serialization
 *.jlser
 *.jld
+*.csv
 
 # Plots
 *.png
