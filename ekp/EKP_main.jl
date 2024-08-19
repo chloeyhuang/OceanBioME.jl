@@ -12,28 +12,13 @@ using DataFrames
 using ProfileView, BenchmarkTools
 
 using EnsembleKalmanProcesses
-using EnsembleKalmanProcesses.Observations
-using EnsembleKalmanProcesses.DataContainers
 using EnsembleKalmanProcesses.ParameterDistributions
-#using Peaks
 
 include("PZ.jl") # Include the functions defined in PZ.jl
 include("EKPUtils_fs.jl") #Includes G function + other required 
 
 year = years = 365day
 const EKP = EnsembleKalmanProcesses
-
-# TO DO:
-# - update code to use new box model - DONE
-# - speed: are type inferences slowing down the process, optimise code etc
-#       - set_model: 18ms (see line 143 utils.jl) - DONE
-#       - set_bgc/get_param: trivial
-#       - RunBoxModel: update_state! takes a long time - not my problem 
-# - figure out optimal spread of std for guesses of means
-# - implement EKP for nonhydrostatic model for LOBSTER/PISCES
-
-# NEEDS TESTING: 
-# - implement EKP for box model for NPZD/LOBSTER
 
 #config for EKP, prior noise / stds proportional to mean guesses
 prior_noise = 0.3
@@ -46,14 +31,16 @@ function G(model; data = nothing, Δt = 0.05, stop_time = 50.0)
     timeseries = out[2]
     n = length(times)
     observations = []
-    #print(timeseries)
+    
     for tracer in keys(timeseries)
-        TS_max = maximum(timeseries[tracer])
-        TS_min = minimum(timeseries[tracer])
-        TS_rms = sqrt(1/n * sum(abs2, (timeseries[tracer].-TS_min)))
-        TS_end = timeseries[tracer][end]
-        T_max = argmax(timeseries[tracer])
-        push!(observations, TS_max - TS_min, TS_rms, TS_end, T_max)
+        if tracer !== :T
+            TS_max = maximum(timeseries[tracer])
+            TS_min = minimum(timeseries[tracer])
+            TS_rms = sqrt(1/n * sum(abs2, (timeseries[tracer].-TS_min)))
+            TS_end = timeseries[tracer][end]
+            T_max = argmax(timeseries[tracer])
+            push!(observations, TS_max - TS_min, TS_rms, TS_end, T_max)
+        end
     end
     # observations returned: end - start, rms, last point of timeseries
     #println(observations)
@@ -115,10 +102,10 @@ function generate_data(obj::EKPObject, true_params, n_samples::Int64, noise) #ge
     Γ = noise * Diagonal([1 for i in 1:dim_output])
     noise_dist = MvNormal(zeros(dim_output), Γ)
 
-    yt = zeros(dim_output, n_samples)
+    yt = Vector{Observation}(undef, n_samples)
 
     for i in 1:n_samples #generates noisy samples of true system as a matrix of dimensions dim_output x n_samples
-        yt[:,i] = G(scale_list(param_true, obj.input_scaling)) .+ rand(noise_dist)
+        yt[i] = Observation(G(scale_list(param_true, obj.input_scaling)) .+ rand(noise_dist), Γ, "$i")
         if i%100 == 0
             println(string("Reached ", i, " samples"))
         end
@@ -127,7 +114,9 @@ function generate_data(obj::EKPObject, true_params, n_samples::Int64, noise) #ge
     end_t = now()
     println("elapsed: " * string(end_t - start_t) * "\n")
 
-    return Observations.Observation(yt, Γ, ["" for i in 1:dim_output])
+    return ObservationSeries(
+        Dict("observations" => yt, "minibatcher" => no_minibatcher())
+    )
 end
 
 #config for models
@@ -136,11 +125,11 @@ z = -10 # specify the nominal depth of the box for the PAR profile
 PAR_func(t) = PAR⁰(t) * exp(0.2z) # Modify the PAR based on the nominal depth and exponential decay
 
 clock = Clock(time = Float64(0))
-grid = BoxModelGrid
+grid = BoxModelGrid()
 PAR = FunctionField{Center, Center, Center}(PAR_func, grid; clock)
 
 
-LOBSTER_bgc = LOBSTER(; grid = BoxModelGrid, light_attenuation_model = PrescribedPhotosyntheticallyActiveRadiation(PAR))
+LOBSTER_bgc = LOBSTER(; grid = BoxModelGrid(), light_attenuation_model = PrescribedPhotosyntheticallyActiveRadiation(PAR))
 LOBSTER_model = BoxModel(; biogeochemistry = LOBSTER_bgc, clock)
 set!(LOBSTER_model, NO₃ = 10.0, NH₄ = 0.1, P = 0.1, Z = 0.01)
 
@@ -166,7 +155,7 @@ param_names_LOBSTER = [
     :phytoplankton_redfield
 ]
 
-npzd_bgc = NPZD(; grid = BoxModelGrid, light_attenuation_model = PrescribedPhotosyntheticallyActiveRadiation(PAR))
+npzd_bgc = NPZD(; grid = BoxModelGrid(), light_attenuation_model = PrescribedPhotosyntheticallyActiveRadiation(PAR))
 npzd_model = BoxModel(; biogeochemistry = npzd_bgc, clock)
 set!(npzd_model, N = 7.0, P = 0.01, Z = 0.05)
 
@@ -225,7 +214,8 @@ for key in keys(constraints)
         prior_mean[idx] = lmax - min(abs(val-lmax), abs((lmax-lmin)^2/(val-lmax)))
     end
 end
-prior_mean = [1.52051e-6, 8.61683e-6, 1.38137, 2.79668e-7,6.6611e-8,3.90374e-5, 0.439785, 0.885452,1.02191e-7, 3.38861e-6, 1.08577e-6]
+
+#prior_mean = [1.52051e-6, 8.61683e-6, 1.38137, 2.79668e-7,6.6611e-8,3.90374e-5, 0.439785, 0.885452,1.02191e-7, 3.38861e-6, 1.08577e-6]
 prior_std = priorstds*[prior_mean[i] for i in 1:length(param_true)]
 
 #####################
@@ -283,10 +273,10 @@ function run_ekp(obj::EKPObject)
 
     ##################
     final_ensemble = EKP_result.final_ensemble
-    final_params = EKP_result.final_params
-    final_model = EKP_result.final_model
+    best_params = EKP_result.best_params
+    best_model = EKP_result.best_model
     error = EKP_result.errors
-    prior_mean = obj.prior_mean
+    prior_mean = obj.unparameterised_prior.mean
     final_err = EKP_result.final_error
 
     println("------")
@@ -299,7 +289,7 @@ function run_ekp(obj::EKPObject)
     println("\ninitial params")
     display(pairs(NamedTuple{Tuple(param_names)}(prior_mean)))
     println("\nfinal params")
-    display(pairs(final_params))
+    display(pairs(best_params))
     println("------")
     println("\nfinal error: " * string(final_err))
     println("\nstd of error in each parameter")
@@ -311,16 +301,18 @@ function run_ekp(obj::EKPObject)
     times = vals[1]
     timeseries = vals[2]
 
-    timeseries_est = RunBoxModel(final_model; Δt = obj.Δt, stop_time = 10*obj.stop_time)[2]
+    timeseries_est = RunBoxModel(best_model; Δt = obj.Δt, stop_time = 10*obj.stop_time)[2]
 
     println("\ntotal time elapsed: " * string(elapsed))
 
     display(plot_timeseries(times, 
                             remove_prescribed_tracers(true_model, timeseries), 
-                            remove_prescribed_tracers(final_model, timeseries_est)))
+                            remove_prescribed_tracers(best_model, timeseries_est)))
 end
 
 println("================\n")
 
-truth = generate_data(NPZDEKP, param_true, 100, observation_noise)
-result = optimise_parameters!(NPZDEKP, truth)
+#truth = generate_data(NPZDEKP, param_true, 100, observation_noise)
+#result = optimise_parameters!(NPZDEKP, truth)
+
+run_ekp(NPZDEKP)

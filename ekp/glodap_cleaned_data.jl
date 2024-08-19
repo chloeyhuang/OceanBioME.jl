@@ -56,7 +56,7 @@ end
 data = 0
 
 if isfile("output/glodap_cleaned_data.jld2") == false
-    data = CSV.read("glodap/GLODAP.csv", DataFrame)
+    data = CSV.read("validation/GLODAP.csv", DataFrame)
     convert_data(data)
 else 
     data = load_object("output/glodap_cleaned_data.jld2")
@@ -65,7 +65,8 @@ end
 Nrows = size(data, 1)
 
 function get_cleaned_data() #cleans data to only include data points that have all measurements
-    filtered_data  = []
+    filtered_data::Vector{@NamedTuple{values::@NamedTuple{lat::Float64, lon::Float64, depth::Float64, T::Float64, S::Float64, DIC::Float64, Alk::Float64, P::Float64, silicate::Float64, phosphate::Float64}, measurements::@NamedTuple{pH::Float64, pCO₂::Float64}}} = []
+    filtered_data = fill((values = (lat = 0.0, lon = 0.0, depth = 0.0, T = 0.0, S = 0.0, DIC = 0.0, Alk = 0.0, P = 0.0, silicate = 0.0, phosphate = 0.0), measurements = (pH = 0.0, pCO₂ = 0.0)), Nrows)
     first = true
 
     Threads.@threads for n in 1:Nrows
@@ -103,20 +104,10 @@ function get_cleaned_data() #cleans data to only include data points that have a
             glodap_pH = data[n, pH_name]
             glodap_pCO₂ = data[n, fCO2_name]
             if glodap_pH >= 1.0 && glodap_pCO₂ >= 50 && valid == true
-                push!(filtered_data, 
-                    NamedTuple{(:values, :measurements)}((
-                            (lat = lat, 
-                            lon = lon, 
-                            depth = depth,
-                            T = T, 
-                            S = S, 
-                            DIC = DIC,
-                            Alk = Alk, 
-                            P = P, 
-                            silicate = silicate, 
-                            phosphate = phosphate),
-                            (pH = glodap_pH, 
-                            pCO₂ = glodap_pCO₂))))
+                vals = @NamedTuple{lat::Float64, lon::Float64, depth::Float64, T::Float64, S::Float64, DIC::Float64, Alk::Float64, P::Float64, silicate::Float64, phosphate::Float64}((lat, lon, depth, T, S, DIC, Alk, P, silicate, phosphate))
+                
+                mmnts = @NamedTuple{pH::Float64, pCO₂::Float64}((glodap_pH, glodap_pCO₂))
+                push!(filtered_data, @NamedTuple{values ::@NamedTuple{lat::Float64, lon::Float64, depth::Float64, T::Float64, S::Float64, DIC::Float64, Alk::Float64, P::Float64, silicate::Float64, phosphate::Float64}, measurements::@NamedTuple{pH::Float64, pCO₂::Float64}}((vals, mmnts)))
                 #=if first == true 
                     println(NamedTuple{(:loc, :values, :measurements)}((
                         (lat = lat, lon = lon),
@@ -128,5 +119,6 @@ function get_cleaned_data() #cleans data to only include data points that have a
             end
         end
     end
-    return filtered_data
+    return filter(!=((values = (lat = 0.0, lon = 0.0, depth = 0.0, T = 0.0, S = 0.0, DIC = 0.0, Alk = 0.0, P = 0.0, silicate = 0.0, phosphate = 0.0), measurements = (pH = 0.0, pCO₂ = 0.0))), filtered_data)
+    
 end

@@ -3,7 +3,7 @@ using OceanBioME.Models: teos10_density, teos10_polynomial_approximation
 using OceanBioME.Models.CarbonChemistryModel: K0, K1, K2, KB, KW, KS, KF, KP1, KP2, KP3, KSi
 
 #   gets the parameter names and values in a NamedTuple (doesn't work with nested NamedTuples)
-function get_params(bgc; params = nothing, excluded = nothing, float_only = true)
+@inline function get_params(bgc; params = nothing, excluded = nothing, float_only = true)
     T = bgc
     if isdefined(bgc, :underlying_biogeochemistry) == true
         T = bgc.underlying_biogeochemistry
@@ -57,7 +57,7 @@ function get_params(bgc; params = nothing, excluded = nothing, float_only = true
     return NamedTuple{Tuple(param_names)}(Tuple(param_vals))
 end
 #   returns bgc name as a callable function
-function get_bgc(model)
+@inline function get_bgc(model)
     T = model
     if isdefined(model, :biogeochemistry)
         T = model.biogeochemistry
@@ -71,7 +71,7 @@ function get_bgc(model)
 end
 
  #  sets the biogeochemistry for simpler models with no grid & light_attenuation specifications (eg. PZ)
-function set_bgc(bgc, params::NamedTuple)
+ @inline function set_bgc(bgc, params::NamedTuple)
     x = nameof(typeof(bgc))
     meth = getfield(Main, x)
 
@@ -91,7 +91,7 @@ function set_bgc(bgc, params::NamedTuple)
     return F(bgc_vars)
 end
 #   sets the biogeochemistry with the params as per the NamedTuple kwarg params
-function set_bgc(bgc; grid, params::NamedTuple) 
+@inline function set_bgc(bgc; grid, params::NamedTuple) 
     bgc_underlying = bgc.underlying_biogeochemistry
     PAR_func = bgc.light_attenuation.fields[1].func
     clock = Clock(time = Float64(0))
@@ -122,7 +122,7 @@ function set_bgc(bgc; grid, params::NamedTuple)
 end
 
 #   returns a model of the same type with the params and inital conditions set as per the kwargs
-function set_model(model; params::NamedTuple, initial_conditions = nothing)
+@inline function set_model(model; params::NamedTuple, initial_conditions = nothing)
     bgc = model.biogeochemistry
     forcing = model.forcing
     grid = model.grid
@@ -153,7 +153,7 @@ function set_model(model; params::NamedTuple, initial_conditions = nothing)
 end
 
 #   set model for carbon chemistry; takes u as a list because nested NamedTuples are annoying to work with 
-function set_model(; u, excluded_vars, return_model = true)
+@inline function set_model(; u, excluded_vars, return_model = true)
     i = 1
     vals = []
     eqc_names = (:K0, :K1, :K2, :KB, :KW, :KS, :KF, :KP1, :KP2, :KP3, :KSi)
@@ -188,7 +188,7 @@ function set_model(; u, excluded_vars, return_model = true)
 end
 
 #   gets raw params as a vector from CarbonChemistry model
-function get_cc_params_raw(model; excluded_terms = (:inverse_T, :log_T, :T²), excluded_constants = (:ionic_strength, :density_function, :calcite_solubility))
+@inline function get_cc_params_raw(model; excluded_terms = (:inverse_T, :log_T, :T²), excluded_constants = (:ionic_strength, :density_function, :calcite_solubility))
     u = []
     for key in propertynames(model)
         if key ∉ excluded_constants
@@ -284,9 +284,8 @@ function negcheck(x, a = 9999999999.9)
     end
 end
 
-function filter_nt_fields(list, nt) 
-    f(x) = ifelse(x ∈ list, false, true)
-    return NamedTuple{filter(f, keys(nt))}(nt)
+@inline function filter_nt_fields(list::Tuple, nt::NamedTuple)
+    return Base.structdiff(nt, NamedTuple{list})
 end
 
 #removes the prescribed tracers (:PAR, :T) from timeseries; works for OceanBioME 0.10.5+ 

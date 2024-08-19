@@ -1,6 +1,4 @@
-using EnsembleKalmanProcesses.Observations
 using EnsembleKalmanProcesses.ParameterDistributions
-
 using OceanBioME.Models: teos10_density, teos10_polynomial_approximation
 using OceanBioME.Models.CarbonChemistryModel: K0, K1, K2, KB, KW, KS, KF, KP1, KP2, KP3, KSi
 
@@ -28,7 +26,7 @@ function calculate_observations(m,
                                 input_scaling, 
                                 output_scaling) 
     
-    rescaled_values = scale_list(collect(params), -input_scaling)
+    rescaled_values = scale_list(values(params), -input_scaling)
     rescaled_params = NamedTuple{keys(params)}(Tuple(rescaled_values))
 
     model = set_model(m; params = rescaled_params, initial_conditions = initial_conditions)
@@ -40,15 +38,14 @@ function calculate_observations(m,
             return scaled_output
         end
     catch e
-        @warn "An error occured while running the model, returned NaN to trigger failure handler"
+        #@warn "An error occured while running the model, returned NaN to trigger failure handler"
         @error e
-
         return NaN 
     end       
 end
 
 #   the same function but for the CarbonChemistry model specifically, requires G as a function of model and data
-function calculate_observations(u, G; data = nothing, input_scaling, output_scaling, excluded_vars)
+function calculate_observations_cc(u, G; data = nothing, input_scaling, output_scaling, excluded_vars)
     rescaled_u = scale_list(u, -input_scaling)
     model = set_model(; u = rescaled_u, excluded_vars = excluded_vars, return_model = true)
     
@@ -65,6 +62,22 @@ function calculate_observations(u, G; data = nothing, input_scaling, output_scal
     end
 end
 
+function calculate_observations_batch(u, G, batch; data = nothing, input_scaling, output_scaling, excluded_vars)
+    rescaled_u = scale_list(u, -input_scaling)
+    model = set_model(; u = rescaled_u, excluded_vars = excluded_vars, return_model = true)
+
+    try
+        if isnothing(output_scaling)
+            return G(model; data, batch)
+        else 
+            return scale_list(G(model; data, batch), output_scaling)
+        end
+    catch e
+        #@error e
+        @warn "params returned a root error in the CarbonChemistry model, returned NaN to trigger failure handler" 
+        return NaN
+    end 
+end
 ##########################################################################################
 #defines a struct that contains all the things needed to perform EKP optimisation
 @kwdef struct EKPObject{FT, MD, D, DT}
@@ -81,9 +94,10 @@ end
 
     iterations :: Int64 = 12
     observation :: Function
+    batch = false
 
     data :: DT 
-    unparamaterised_prior :: NamedTuple
+    unparameterised_prior :: NamedTuple
     additional_fns = nothing
 end
 
@@ -184,7 +198,7 @@ function EKPObject(;
                                             input_scaling = input_scaling,
                                             output_scaling = nothing)                                      
     output_scaling = scale_parameters(unscaled_output)[2]
-    #@info "unscaled output: \n"  * join(round.(unscaled_output; digits = 4), ", ")
+    @info "unscaled output: \n"  * join(round.(unscaled_output; digits = 4), ", ")
 
     #defines functions so that they are only in terms of the model
     F(u)= calculate_observations(model, 
@@ -206,7 +220,7 @@ function EKPObject(;
         end
     end
 
-    unparamaterised_prior = (mean = scaled_mean, std = scaled_std, left_lim = scaled_lim_min, right_lim = scaled_lim_max)
+    unparameterised_prior = (mean = scaled_mean, std = scaled_std, left_lim = scaled_lim_min, right_lim = scaled_lim_max)
 
     et = now()
     @info "Initialisation time: " * string(et - st) * "\n"
@@ -221,9 +235,10 @@ function EKPObject(;
                     input_scaling,
                     output_scaling,
                     iterations,
-                    u -> F(u),
+                    F,
+                    false,
                     data,
-                    unparamaterised_prior,
+                    unparameterised_prior,
                     additional_fns)
 end
 
@@ -234,6 +249,8 @@ function CarbonChemistryEKPObject(; G,
                                     iterations, 
                                     prior_mean, 
                                     prior_std,
+                                    scale_output = true,
+                                    batch = false,
                                     kwargs...)
     st = now()
 
@@ -243,6 +260,7 @@ function CarbonChemistryEKPObject(; G,
             "\n number of parameters to optimise: " * string(length(prior_mean)) * "\n"
     
     input_scaling = scale_parameters(zeroinfcheck.(prior_mean, 0))[2]
+    
     scaled_mean = zeroinfcheck.(scale_parameters(prior_mean)[1], 0.0)
     scaled_std = zeroinfcheck.(scale_list(prior_std, input_scaling), 0.001^2)
     lims = zeros(length(scaled_mean), 2)
@@ -278,22 +296,6 @@ function CarbonChemistryEKPObject(; G,
                     lims[i, 1], lims[i, 2]) for i in 1:length(scaled_mean)]
     prior = combine_distributions(prior_dis)
 
-    unscaled_output = calculate_observations(scaled_mean, G; 
-                                            data, 
-                                            input_scaling, 
-                                            output_scaling = nothing, 
-                                            excluded_vars)
-    output_scaling = scale_parameters(unscaled_output)[2]
-
-    #@info "unscaled output: \n"  * join(round.(unscaled_output; digits = 4), ", ")
-
-    F(u) = calculate_observations(u, G; 
-                                    data,
-                                    input_scaling,
-                                    output_scaling,
-                                    excluded_vars)
-    
-    
     #   checks for additional functions defined if there are any
     additional_fns = values(kwargs)
     if isempty(additional_fns) == false
@@ -305,33 +307,103 @@ function CarbonChemistryEKPObject(; G,
     lim_min = lims[:, 1]
     lim_max = lims[:, 2]
 
-    unparamaterised_prior = (mean = scaled_mean, std = scaled_std, left_lim = lim_min, right_lim = lim_max)
+    unparameterised_prior = (mean = scaled_mean, std = scaled_std, left_lim = lim_min, right_lim = lim_max)
 
-    et = now()
-    @info "Initialisation time: " * string(et - st) * "\n"
+    if batch == false
+        unscaled_output = calculate_observations_cc(scaled_mean, G; 
+                                                data, 
+                                                input_scaling, 
+                                                output_scaling = nothing, 
+                                                excluded_vars)
+        output_scaling = scale_parameters(unscaled_output)[2]
 
-    return EKPObject(CarbonChemistry(),
-                    0,
-                    0,
-                    NamedTuple{()}(()),
-                    prior,
-                    excluded_vars,
-                    nothing,
-                    input_scaling,
-                    output_scaling,
-                    iterations,
-                    u -> F(u),
-                    data,
-                    unparamaterised_prior,
-                    additional_fns)
+        if scale_output == false
+            output_scaling = [0 for i in output_scaling]
+        end
+        #@info "unscaled output: \n"  * join(round.(unscaled_output; digits = 4), ", ")
+        F(u) = calculate_observations_cc(u, G; 
+                                        data,
+                                        input_scaling,
+                                        output_scaling,
+                                        excluded_vars)
+        et = now()
+        @info "Initialisation time: " * string(et - st) * "\n"
+
+        return EKPObject(CarbonChemistry(),
+                        0,
+                        0,
+                        NamedTuple{()}(()),
+                        prior,
+                        excluded_vars,
+                        nothing,
+                        input_scaling,
+                        output_scaling,
+                        iterations,
+                        F,
+                        batch,
+                        data,
+                        unparameterised_prior,
+                        additional_fns)
+        
+    elseif typeof(batch) <: Int 
+        unscaled_output = calculate_observations_batch(scaled_mean, 
+                                                G, 
+                                                1:batch; 
+                                                data,
+                                                input_scaling,
+                                                output_scaling = nothing,
+                                                excluded_vars)
+        #
+        #@info "unscaled output: \n"  * join(round.(unscaled_output; digits = 4), ", ")
+        nblength = Int(length(unscaled_output)/(batch))
+        output_scaling = vcat([scale_parameters(unscaled_output)[2][1:nblength] for i in 1:batch]...)
+
+        if scale_output == false
+            output_scaling = [0 for j in output_scaling]
+        end
+        
+        H(u, b) = calculate_observations_batch(u, 
+                                        G, 
+                                        b; 
+                                        data,
+                                        input_scaling,
+                                        output_scaling,
+                                        excluded_vars)
+        
+        et = now()
+        @info "Initialisation time: " * string(et - st) * "\n"
+
+        return EKPObject(CarbonChemistry(),
+                        0,
+                        0,
+                        NamedTuple{()}(()),
+                        prior,
+                        excluded_vars,
+                        nothing,
+                        input_scaling,
+                        output_scaling,
+                        iterations,
+                        H,
+                        batch,
+                        data,
+                        unparameterised_prior,
+                        additional_fns)
+    end
 end
 ##########################################################################################
 
-function optimise_parameters!(obj::EKPObject, truth::Observation)
+function optimise_parameters!(obj::EKPObject, truth)
     unscale_in(list) = scale_list(list, -1 * obj.input_scaling)
     unscale_out(list) = scale_list(list, -1 * obj.output_scaling)
 
     G(u) = obj.observation(u)
+    
+    if typeof(obj.batch) == Int
+        @error("hisdfskdfjlsakjasjasjkf \n sdfafasfasdfasdf \n")
+        G(u) = obj.observation(u, get_current_minibatch(truth))
+    else 
+        G(u) = obj.observation(u)
+    end
     start_time = now()
 
     #   basic settings for EKP: picked α_reg = 1.0 and update_freq = 1 to minimise ensemble collapse / divergence
@@ -342,19 +414,15 @@ function optimise_parameters!(obj::EKPObject, truth::Observation)
 
     #   checks that constrained_gaussian hasn't incorrectly parameterised the distribution and 
     #   changes the distribution to unconstrained (i.e set bounds on that particular variable to (-Inf, Inf))
-    scaled_prior_info = obj.unparamaterised_prior
+    scaled_prior_info = obj.unparameterised_prior
     scaled_mean = scaled_prior_info.mean
     scaled_std = scaled_prior_info.std
     prior_mean = unscale_in(scaled_prior_info.mean)
     scaled_left_lim = scaled_prior_info.left_lim
     scaled_right_lim = scaled_prior_info.right_lim
 
-    dim_input = length(mean(prior))
-    dim_output = length(truth.samples[1])
-
     process = Unscented(mean(prior), cov(prior); α_reg = α_reg, update_freq = update_freq)
-    uki_obj = EnsembleKalmanProcess(truth.mean, truth.obs_noise_cov, process, failure_handler_method = SampleSuccGauss())
-    err = zeros(N_iter)
+    uki_obj = EnsembleKalmanProcess(truth, process; failure_handler_method = SampleSuccGauss())
 
     diff = unscale_in(get_ϕ_mean_final(prior, uki_obj)) .- prior_mean
 
@@ -362,20 +430,20 @@ function optimise_parameters!(obj::EKPObject, truth::Observation)
 
     for i in eachindex(diff)
         if abs(diff[i]/prior_mean[i]) > 0.01
-            println(i)
-            println("diff: ",round(100*diff[i]/prior_mean[i]; digits = 4), "% | constrained mean: ", unscale_in(get_ϕ_mean_final(prior, uki_obj))[i], "| real mean: ",   prior_mean[i])
-            @warn("prior mean and optimised constrained mean is not the same, likely an error with constrained_gaussian")
+            println("$i | diff: ",round(100*diff[i]/prior_mean[i]; digits = 4), "% | constrained mean: ", round(unscale_in(get_ϕ_mean_final(prior, uki_obj))[i]; digits = 4), "| real mean: ",   round(prior_mean[i]; digits = 4))
+            #@warn("prior mean and optimised constrained mean is not the same, likely an error with constrained_gaussian")
             if abs(diff[i]/prior_mean[i]) > 0.05
                 push!(broken_vars, i)
+                scaled_left_lim[i] = -Inf
+                scaled_right_lim[i] = Inf
             end
         end
     end
-    for i in broken_vars
-        scaled_left_lim[i] = -Inf
-        scaled_right_lim[i] = Inf
-    end
-    @info("constraints of vars " * join(broken_vars, ", ")* " have been changed to [-Inf, Inf] to prevent incorrect sampling of the intended distribution")
 
+    if empty(broken_vars) == false
+        @info("constraints of vars " * join(broken_vars, ", ")* " have been changed to [-Inf, Inf] to prevent incorrect sampling of the intended distribution")
+    end
+    
     prior_dis = [constrained_gaussian("$i", 
                     scaled_mean[i], 
                     scaled_std[i], 
@@ -387,89 +455,97 @@ function optimise_parameters!(obj::EKPObject, truth::Observation)
 
     @info "elapsed initialisation time: " * string(st - start_time)
     process = Unscented(mean(prior), cov(prior); α_reg = α_reg, update_freq = update_freq)
-    uki_obj = EnsembleKalmanProcess(truth.mean, truth.obs_noise_cov, process, failure_handler_method = SampleSuccGauss())
+    uki_obj = EnsembleKalmanProcess(truth, process; failure_handler_method = SampleSuccGauss())
 
     #println(unscale_in(get_ϕ_mean_final(prior, uki_obj)))
 
     @info "EKP starting...."
 
+    err = zeros(N_iter)
     current_best = 0
     min_err = 0 
-        try 
-            for i in 1:N_iter
-                params_i = get_ϕ_final(prior, uki_obj)
-                J =  size(params_i)[2]
 
-                G_ens = zeros(Float64, dim_output, J)
-                Threads.@threads for j in 1:J
-                    G_ens[:, j] .= G(params_i[:, j])
-                end
-                
-                EKP.update_ensemble!(uki_obj, G_ens)
+    dim_input = length(mean(prior))
+    dim_output = length(get_obs(truth))
 
-                err[i] = get_error(uki_obj)[end]
-                @info ("\n" * 
+    #try 
+        for i in 1:N_iter
+            params_i = get_ϕ_final(prior, uki_obj)
+            J =  size(params_i)[2]
+
+            G_ens = zeros(Float64, dim_output, J)
+            Threads.@threads for j in 1:J
+                G_ens[:, j] .= G(params_i[:, j])
+            end
+            #println(get_ϕ_mean_final(prior, uki_obj))
+
+            EKP.update_ensemble!(uki_obj, G_ens)
+           
+            err[i] = get_error(uki_obj)[end]
+            @info (
                 "Iteration: " * string(i) *
                 ", Error: " * string(err[i]) *
                 " norm(Cov):" * string(norm(uki_obj.process.uu_cov[i])) * "\n")
-                #display(unscale_in(get_ϕ_mean_final(prior, uki_obj)))
-                if err[i] == min(negcheck.(err[1:i])...)
-                    current_best = unscale_in(get_ϕ_mean_final(prior, uki_obj))
-                    min_err = err[i]
-                    @info ("new min of " * string(min_err))
-                end
+            #display(unscale_in(get_ϕ_mean_final(prior, uki_obj)))
+            if err[i] == min(negcheck.(err[1:i])...)
+                current_best = unscale_in(get_ϕ_mean_final(prior, uki_obj))
+                min_err = err[i]
+                @info ("new min of " * string(min_err))
             end
-            if err[end] > min_err
-                @info "returned params and eqc are not from the last iteration but instead the best (min err). " * 
-                "\n best params had error " * string(min_err)
-            end
+        end
+        if err[end] > min_err
+            @info "returned params and eqc are not from the last iteration but instead the best (min err). " * 
+            "\n best params had error " * string(min_err)
+        end
 
-            #   special case for CarbonChemistry model which has a different structure to set model / get params
-            if typeof(obj.model) <: CarbonChemistry
-                final_ensemble = get_ϕ_final(prior, uki_obj)
-                final_params = unscale_in(get_ϕ_mean_final(prior, uki_obj))
-                final_cov = get_u_cov_final(uki_obj)
+        #   special case for CarbonChemistry model which has a different structure to set model / get params
+        if typeof(obj.model) <: CarbonChemistry
+            final_ensemble = get_ϕ_final(prior, uki_obj)
+            final_params = unscale_in(get_ϕ_mean_final(prior, uki_obj))
+            final_cov = get_u_cov_final(uki_obj)
 
-                final_eqc = set_model(; u = final_params, excluded_vars = obj.excluded_vars, return_model = true)
-                final_params = set_model(; u = final_params, excluded_vars = obj.excluded_vars, return_model = false)
-                error_std = unscale_in([sqrt(final_cov[i, i]) for i in 1:dim_input])
-                et = now()
-                @info "total elapsed: " * string(et - st)
+            final_eqc = set_model(; u = final_params, excluded_vars = obj.excluded_vars, return_model = true)
+            final_params = set_model(; u = final_params, excluded_vars = obj.excluded_vars, return_model = false)
+            error_std = unscale_in([sqrt(final_cov[i, i]) for i in 1:dim_input])
+            et = now()
+            @info "total elapsed: " * string(et - st)
 
-                #   returns the best model (where best = lowest error)
-                #   chose for it to return the lowest error model as opposed to last model in case of divergence of EKP 
-                return (final_ensemble = final_ensemble, 
-                        best_params = set_model(; u = current_best, excluded_vars = obj.excluded_vars, return_model = false), 
-                        best_model = set_model(; u = current_best, excluded_vars = obj.excluded_vars, return_model = true), 
-                        error_std = error_std, 
-                        final_error = err[end])
-            else 
-                final_ensemble = get_ϕ_final(prior, uki_obj)
-                final_params = unscale_in(get_ϕ_mean_final(prior, uki_obj))
-                final_cov = get_u_cov_final(uki_obj)
-                param_names = obj.mutable_vars
+            #   returns the best model (where best = lowest error)
+            #   chose for it to return the lowest error model as opposed to last model in case of divergence of EKP 
+            return (final_ensemble = final_ensemble, 
+                    best_params = set_model(; u = current_best, excluded_vars = obj.excluded_vars, return_model = false), 
+                    best_model = set_model(; u = current_best, excluded_vars = obj.excluded_vars, return_model = true), 
+                    final_model = final_eqc,
+                    error_std = error_std, 
+                    final_error = err[end])
+        else 
+            final_ensemble = get_ϕ_final(prior, uki_obj)
+            final_params = unscale_in(get_ϕ_mean_final(prior, uki_obj))
+            final_cov = get_u_cov_final(uki_obj)
+            param_names = obj.mutable_vars
 
-                final = NamedTuple{Tuple(param_names)}((final_params))
-                final_model = set_model(obj.model; params = final, initial_conditions = obj.initial_conditions)
+            final = NamedTuple{Tuple(param_names)}((final_params))
+            final_model = set_model(obj.model; params = final, initial_conditions = obj.initial_conditions)
 
-                best = NamedTuple{Tuple(param_names)}((current_best))
-                best_model = set_model(obj.model; params = best, initial_conditions = obj.initial_conditions)
-                error_std = unscale_in([sqrt(final_cov[i, i]) for i in 1:dim_input])
-                errors = (NamedTuple{Tuple(param_names)}(Tuple(error_std)))
+            best = NamedTuple{Tuple(param_names)}((current_best))
+            best_model = set_model(obj.model; params = best, initial_conditions = obj.initial_conditions)
+            error_std = unscale_in([sqrt(final_cov[i, i]) for i in 1:dim_input])
+            errors = (NamedTuple{Tuple(param_names)}(Tuple(error_std)))
 
-                et = now()
-                @info "elapsed: " * string(et - st)
-                #   returns the best model (where best = lowest error)
-                #   chose for it to return the lowest error model as opposed to last model in case of divergence of EKP 
-                return  (final_ensemble = final_ensemble, 
-                        best_params = best, 
-                        best_model = best_model, 
-                        errors = errors, 
-                        final_error = err[end])
-            end
-        catch e 
-            @error e
-            @info "min error run had error " * string(min_err)
-            return current_best
-        end 
+            et = now()
+            @info "elapsed: " * string(et - st)
+            #   returns the best model (where best = lowest error)
+            #   chose for it to return the lowest error model as opposed to last model in case of divergence of EKP 
+            return  (final_ensemble = final_ensemble, 
+                    best_params = best, 
+                    best_model = best_model, 
+                    final_model = final_model,
+                    errors = errors, 
+                    final_error = err[end])
+        end
+    #=catch e 
+        @error e
+        @info "min error run had error " * string(min_err)
+        return current_best
+    end   =#
 end
