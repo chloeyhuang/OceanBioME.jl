@@ -28,22 +28,29 @@ function get_model_error(model, data)
 
     pco2_err_counter = 0
     for dp in data
-        ph_conditions = filter_nt_fields((:depth,), dp.values)
-        pco2_conditions = filter_nt_fields((:depth, :T, :P), dp.values)
+        ph_conditions = filter_pH_fields(dp.values)
+        pco2_conditions = filter_pCO2_fields(dp.values)
         pH_glodap = dp.measurements.pH
         pCO₂_glodap = dp.measurements.pCO₂
 
         phe = model(; ph_conditions..., return_pH = true) - pH_glodap
         pce = model(; pco2_conditions..., T = 20, P = 0) - pCO₂_glodap
+
         push!(pH_err, phe)
         push!(pCO₂_err, pce)
-        if abs(pce) > 50
+        if abs(pce) > 30
             #println( model(; pco2_conditions..., T = 20, P = 0), " | " , pCO₂_glodap)
             pco2_err_counter += 1
         end
     end
 
-    println(pco2_err_counter)
+    pH_MSE = mean(sum(abs2, pH_err))
+    pCO₂_MSE = mean(sum(abs2, pCO₂_err))
+
+    println("Number of points with pCO₂ error larger than 30: " * string(pco2_err_counter))
+    println("pH MSE: " * string(pH_MSE))
+    println("pCO₂ MSE: " * string(pCO₂_MSE))
+    println("------------")
     return (pH = pH_err, pCO₂ = pCO₂_err)
 end
 
@@ -53,14 +60,18 @@ function plot_errors(
     to_plot = :pCO₂,
     model = CarbonChemistry(),
     color_name = :S, 
-    ylims = nothing)
+    ylims = nothing, 
+    title = "Δ" * string(to_plot))
 
     color_marker = [dp.values[color_name] for dp in data]
     fig = CairoMakie.Figure(; size=(1600,900))
 
+    m_diff = ifelse(to_plot == :pH, [dp.measurements.pH for dp in data], [dp.measurements.pCO₂ for dp in data])
+    m_title = ifelse(to_plot == :pH, "pH", "pCO₂")
+
     ax = CairoMakie.Axis(fig[1, 1], title = "DIC")#, aspect = DataAspect(), title = "Local grid")
     ax2 = CairoMakie.Axis(fig[1, 2], title = "Alk")
-    ax3 = CairoMakie.Axis(fig[1, 3], title = "pH")
+    ax3 = CairoMakie.Axis(fig[1, 3], title = m_title)
     ax4 = CairoMakie.Axis(fig[2, 1], title = "T")
     ax5 = CairoMakie.Axis(fig[2, 2], title = "S")
     ax6 = CairoMakie.Axis(fig[2, 3], title = "Depth")
@@ -69,7 +80,7 @@ function plot_errors(
 
     sc=CairoMakie.scatter!(ax, [dp.values.DIC for dp in data], error, markersize = 3, alpha = 0.5, color = color_marker)
     CairoMakie.scatter!(ax2, [dp.values.Alk for dp in data], error, markersize = 3, alpha = 0.5, color = color_marker)
-    CairoMakie.scatter!(ax3, [dp.measurements.pH for dp in data], error, markersize = 3, alpha = 0.5, color = color_marker)
+    CairoMakie.scatter!(ax3, m_diff, error, markersize = 3, alpha = 0.5, color = color_marker)
     CairoMakie.scatter!(ax4, [dp.values.T for dp in data], error, markersize = 3, alpha = 0.5, color = color_marker)
     CairoMakie.scatter!(ax5, [dp.values.S for dp in data], error, markersize = 3, alpha = 0.5, color = color_marker)
     CairoMakie.scatter!(ax6, [dp.values.depth for dp in data], error, markersize = 3, alpha = 0.5, color = color_marker)
@@ -80,8 +91,6 @@ function plot_errors(
         [CairoMakie.ylims!(a, ylims[1], ylims[2]) for a in (ax, ax2, ax3, ax4, ax5, ax6)]
     end
     
-    title = "Δ" * string(to_plot)
-
     Colorbar(fig[1:2, 4], sc)
 
     Label(fig[0, :], title)

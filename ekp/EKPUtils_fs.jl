@@ -1,9 +1,24 @@
+module EKPUtils
+
+export EKPObject, CarbonChemistryEKPObject, optimise_parameters!
+export plot_errors, plot_var, get_model_error
+export filter_nt_fields, filter_pCO2_fields, filter_pH_fields
+export set_model, get_params, plot_timeseries, remove_prescribed_tracers, get_cc_params_raw
+export zeroinfcheck, nancheck, negcheck, scale_list, scale_parameters
+
+using EnsembleKalmanProcesses
 using EnsembleKalmanProcesses.ParameterDistributions
+using Statistics, Distributions, Random, LinearAlgebra
+
 using OceanBioME.Models: teos10_density, teos10_polynomial_approximation
-using OceanBioME.Models.CarbonChemistryModel: K0, K1, K2, KB, KW, KS, KF, KP1, KP2, KP3, KSi
+using OceanBioME: CarbonChemistry
+using OceanBioME.Models.CarbonChemistryModel: K0, K1, K2, KF, KB, KW, KS, KP1, KP2, KP3, KSi
+using Dates: now
 
 include("Utils.jl")
-include("FastSimulations.jl")
+include("CarbonChemistry_utils.jl")
+
+const EKP = EnsembleKalmanProcesses
 
 #=
 - define the outputs of the 'observations' from diff input of vars
@@ -45,9 +60,9 @@ function calculate_observations(m,
 end
 
 #   the same function but for the CarbonChemistry model specifically, requires G as a function of model and data
-function calculate_observations_cc(u, G; data = nothing, input_scaling, output_scaling, excluded_vars)
+function calculate_observations_cc(u, G; data = nothing, input_scaling, output_scaling, excluded_vars, excluded_eqns)
     rescaled_u = scale_list(u, -input_scaling)
-    model = set_model(; u = rescaled_u, excluded_vars = excluded_vars, return_model = true)
+    model = set_model(; u = rescaled_u, excluded_vars, excluded_eqns, return_model = true)
     
     try
         if isnothing(output_scaling)
@@ -56,8 +71,8 @@ function calculate_observations_cc(u, G; data = nothing, input_scaling, output_s
             return scale_list(G(model; data), output_scaling)
         end
     catch e
-        #@error e
-        @warn "params returned a root error in the CarbonChemistry model, returned NaN to trigger failure handler" 
+        @error e
+        #@warn "params returned a root error in the CarbonChemistry model, returned NaN to trigger failure handler" 
         return NaN
     end
 end
@@ -117,6 +132,10 @@ function EKPObject(;
     st = now()
     initial_values = []
     tracers = keys(model.fields)
+
+    if Threads.nthreads() !== 1
+        throw("Julia is running with more than 1 thread, which does not work for running models which use jld2 to save files")
+    end
 
     #   sets constraints to be either what is specified or to [-Inf, 0], [0, Inf] or [-Inf, Inf] depending on sign
     lims = zeros(length(mutable_vars), 2)
@@ -246,6 +265,7 @@ end
 function CarbonChemistryEKPObject(; G,
                                     data = nothing, 
                                     excluded_vars, 
+                                    excluded_eqns,
                                     iterations, 
                                     prior_mean, 
                                     prior_std,
@@ -307,6 +327,10 @@ function CarbonChemistryEKPObject(; G,
     lim_min = lims[:, 1]
     lim_max = lims[:, 2]
 
+    set_m(; u, return_model = true) = set_model(; u, excluded_vars, excluded_eqns, return_model)
+
+    additional_fns = merge(additional_fns, (set_model = set_m, ))
+
     unparameterised_prior = (mean = scaled_mean, std = scaled_std, left_lim = lim_min, right_lim = lim_max)
 
     if batch == false
@@ -314,7 +338,8 @@ function CarbonChemistryEKPObject(; G,
                                                 data, 
                                                 input_scaling, 
                                                 output_scaling = nothing, 
-                                                excluded_vars)
+                                                excluded_vars,
+                                                excluded_eqns)
         output_scaling = scale_parameters(unscaled_output)[2]
 
         if scale_output == false
@@ -325,7 +350,9 @@ function CarbonChemistryEKPObject(; G,
                                         data,
                                         input_scaling,
                                         output_scaling,
-                                        excluded_vars)
+                                        excluded_vars,
+                                        excluded_eqns)
+        
         et = now()
         @info "Initialisation time: " * string(et - st) * "\n"
 
@@ -395,6 +422,9 @@ end
 function optimise_parameters!(obj::EKPObject, truth)
     unscale_in(list) = scale_list(list, -1 * obj.input_scaling)
     unscale_out(list) = scale_list(list, -1 * obj.output_scaling)
+    if typeof(obj.model) <: CarbonChemistry
+        set_model = obj.additional_fns.set_model
+    end
 
     G(u) = obj.observation(u)
     
@@ -484,8 +514,8 @@ function optimise_parameters!(obj::EKPObject, truth)
             err[i] = get_error(uki_obj)[end]
             @info (
                 "Iteration: " * string(i) *
-                ", Error: " * string(err[i]) *
-                " norm(Cov):" * string(norm(uki_obj.process.uu_cov[i])) * "\n")
+                ", Error: " * string(round(err[i]; digits = 4)) *
+                " norm(Cov):" * string(round(norm(uki_obj.process.uu_cov[i]); digits = 6)) * "\n")
             #display(unscale_in(get_ϕ_mean_final(prior, uki_obj)))
             if err[i] == min(negcheck.(err[1:i])...)
                 current_best = unscale_in(get_ϕ_mean_final(prior, uki_obj))
@@ -504,8 +534,8 @@ function optimise_parameters!(obj::EKPObject, truth)
             final_params = unscale_in(get_ϕ_mean_final(prior, uki_obj))
             final_cov = get_u_cov_final(uki_obj)
 
-            final_eqc = set_model(; u = final_params, excluded_vars = obj.excluded_vars, return_model = true)
-            final_params = set_model(; u = final_params, excluded_vars = obj.excluded_vars, return_model = false)
+            final_eqc = set_model(; u = final_params, return_model = true)
+            final_params = set_model(; u = final_params, return_model = false)
             error_std = unscale_in([sqrt(final_cov[i, i]) for i in 1:dim_input])
             et = now()
             @info "total elapsed: " * string(et - st)
@@ -513,8 +543,8 @@ function optimise_parameters!(obj::EKPObject, truth)
             #   returns the best model (where best = lowest error)
             #   chose for it to return the lowest error model as opposed to last model in case of divergence of EKP 
             return (final_ensemble = final_ensemble, 
-                    best_params = set_model(; u = current_best, excluded_vars = obj.excluded_vars, return_model = false), 
-                    best_model = set_model(; u = current_best, excluded_vars = obj.excluded_vars, return_model = true), 
+                    best_params = set_model(; u = current_best,return_model = false), 
+                    best_model = set_model(; u = current_best, return_model = true), 
                     final_model = final_eqc,
                     error_std = error_std, 
                     final_error = err[end])
@@ -548,4 +578,6 @@ function optimise_parameters!(obj::EKPObject, truth)
         @info "min error run had error " * string(min_err)
         return current_best
     end   =#
+end
+
 end

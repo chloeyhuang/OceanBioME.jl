@@ -1,8 +1,5 @@
 using OceanBioME, Oceananigans
-import OceanBioME: BoxModelGrid
-using OceanBioME.Models: NPZDModel, LOBSTERModel
-using Oceananigans.Units
-using Oceananigans.Fields: FunctionField
+using OceanBioME.Models.CarbonChemistryModel: K0, K1, K2, KF, KB, KW, KS, KP1, KP2, KP3, KSi
 
 using Dates: now
 using JLD2
@@ -16,11 +13,12 @@ using EnsembleKalmanProcesses.ParameterDistributions
 
 const EKP = EnsembleKalmanProcesses
 
-include("EKPUtils_fs.jl")
-include("CarbonChemistry_utils.jl")
+#include("EKPUtils_fs.jl")
 include("glodap_cleaned_data.jl")
 
-function generate_truth(obj::EKPObject, n_samples, G)
+using .EKPUtils
+
+function generate_truth(obj::Main.EKPUtils.EKPObject, n_samples, G)
     @info "Generating samples..."
     start_t = now()
     
@@ -39,11 +37,29 @@ function generate_truth(obj::EKPObject, n_samples, G)
 
     yt = Vector{Observation}(undef, n_samples)
 
+    #=
+    unscaled_cov = [1/n*vh,             # means for non error mean/var/rms
+                    vh, 
+                    vh, 
+                    1/n*vc, 
+                    vc, 
+                    vc, 
+                    sqrt(1/n^3*(0.01 * (6.63-vh-mh^2)^2 + 4n*vh*(vh+mh^2))),
+                    sqrt(1/n^3*(0.01 * (6.63-vc-mc^2)^2 + 4n*vc*(vc+mc^2))),
+                    75000.0]
+    
+    
+    =#
+    unscaled_cov = 1000* [1/pH_error, 
+                    1/pH_error,
+                    1/pCO₂_error,
+                    1/pCO₂_error,
+                    1/pCO₂_error]
     #   cov matrix of error
-    Γ = diagm([#=1/n*vh, vh, vh, =#1/n*vc, vc, vc, 
-    #=sqrt(1/n^3*(0.01 * (6.63-vh-mh^2)^2 + 4n*vh*(vh+mh^2)))   ,=# 
-    sqrt(1/n^3*(0.01 * (6.63-vc-mc^2)^2 + 4n*vc*(vc+mc^2)))])
-    #=Γ = Diagonal([1/n*vh, 
+    Γ = diagm(scale_list(unscaled_cov, obj.output_scaling))
+    
+    #=
+    Γ = Diagonal([1/n*vh, 
                     vh, 
                     1/n*vc, 
                     vc, 
@@ -51,6 +67,7 @@ function generate_truth(obj::EKPObject, n_samples, G)
                     sqrt(1/n^3*(0.01 * (6.63-vc-mc^2)^2 + 4n*vc*(vc+mc^2)))]) 
     =#
 
+    display(Γ)
     Threads.@threads for i in 1:(n_samples)
         if i%50 == 0
             println(string("Reached ", i, " samples"))
@@ -93,6 +110,18 @@ function generate_truth_mbatched(obj::EKPObject)
 end
 
 @inline function G(pH, pCO₂, true_pH, true_pCO₂)
+    pH_error_v = pH .- true_pH
+    pCO₂_error_v = pCO₂ .- true_pCO₂
+
+    pH_MAE= mean(abs.(pH_error_v))
+    pCO₂_MAE = mean(abs.(pCO₂_error_v))
+
+    pH_var_err = var(pH_error_v)
+    pCO₂_var_err = var(pCO₂_error_v)
+
+    pH_iqr_err = iqr(pH_error_v)
+    pCO₂_iqr_err = iqr(pCO₂_error_v)
+
     pH_mean = mean(pH)
     pH_var = var(pH)
     pH_iqr = iqr(pH)
@@ -101,12 +130,22 @@ end
     pCO₂_var = var(pCO₂)
     pCO₂_iqr = iqr(pCO₂)
 
-    n = length(pH)
+    pCO2_large_err_count = 0
+    for v in pCO₂_error_v
+        if abs(v) > 30 
+            pCO2_large_err_count += 1
+        end
+    end
 
-    pH_rms_err =  sqrt(sum(abs2, (pH.-true_pH)))
-    pCO₂_rms_err = sqrt(sum(abs2, (pCO₂.-true_pCO₂)))
+    #n = length(pH)
+    pH_MSE =  mean(sum(abs2, (pH.-true_pH)))
+    pCO₂_MSE = mean(sum(abs2, (pCO₂.-true_pCO₂)))
 
-    return[#=pH_mean, pH_var, pH_iqr, =#pCO₂_mean, pCO₂_var, pCO₂_iqr,#= pH_rms_err, =#pCO₂_rms_err]
+    return  [pH_MAE, 
+            pH_MSE,
+            pCO₂_MAE, 
+            pCO₂_MSE,
+            pCO2_large_err_count]
 end
 
 @inline function G_model(model; data)
@@ -126,26 +165,28 @@ end
     return [pCO₂(i) for i in batch]
 end 
 
-dr = get_cleaned_data()
-d::Vector{@NamedTuple{values ::@NamedTuple{lat::Float64, lon::Float64, depth::Float64, T::Float64, S::Float64, DIC::Float64, Alk::Float64, P::Float64, silicate::Float64, phosphate::Float64}, measurements::@NamedTuple{pH::Float64, pCO₂::Float64}}} = dr
+d = get_cleaned_data()
 
 raw_data = load_object("output/glodap_cleaned_data.jld2")
 
-priorstds = 0.005
+priorstds = 0.001
 pH_error = 0.01
 pCO₂_error = 5.0 
 
 excluded_vars = (:inverse_T, :log_T, :T²)
+excluded_constants = setdiff(propertynames(CarbonChemistry()), (:solubility, :carbonic_acid, :phosphoric_acid))
+excluded_eqns = setdiff((:K0, :K1, :K2, :KB, :KW, :KS, :KF, :KP1, :KP2, :KP3, :KSi), (:K0, :K1, :K2, :KP1, :KP2, :KP3))
 
-prior_mean = get_cc_params_raw(CarbonChemistry(); excluded_terms = excluded_vars, excluded_constants = (:ionic_strength, :calcite_solubility, :density_function))
+prior_mean = get_cc_params_raw(CarbonChemistry(); excluded_terms = excluded_vars, excluded_constants = excluded_constants)
 prior_std = zeroinfcheck.(abs.(priorstds .* prior_mean), priorstds)
 
 #dt = sample(d, 800; replace = false)
 
-cc_ekp = CarbonChemistryEKPObject(; G = G_model, 
+cc_ekp = EKPUtils.CarbonChemistryEKPObject(; G = G_model, 
                                     data = d,
                                     excluded_vars,
-                                    iterations = 15,
+                                    excluded_eqns,
+                                    iterations = 10,
                                     prior_mean,
                                     #scale_output = false,
                                     prior_std)
@@ -154,10 +195,14 @@ truth = generate_truth(cc_ekp, 300, G)
 
 println("-------------")
 
-result = optimise_parameters!(cc_ekp, truth)
+result = EKPUtils.optimise_parameters!(cc_ekp, truth)
 m = result.best_model
 mb = result.final_model
 
+println("Original error:")
+get_model_error(CarbonChemistry(), d)
+
+display(plot_errors(d; model = mb, ylims = [-100, 100]))
 display(plot_errors(d; model = m, ylims = [-100, 100]))
 
 println("hello world!")

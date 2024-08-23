@@ -119,6 +119,9 @@ function get_cleaned_data() #cleans data to only include data points that have a
             end
         end
     end
-    return filter(!=((values = (lat = 0.0, lon = 0.0, depth = 0.0, T = 0.0, S = 0.0, DIC = 0.0, Alk = 0.0, P = 0.0, silicate = 0.0, phosphate = 0.0), measurements = (pH = 0.0, pCO₂ = 0.0))), filtered_data)
+    dr = filter(!=((values = (lat = 0.0, lon = 0.0, depth = 0.0, T = 0.0, S = 0.0, DIC = 0.0, Alk = 0.0, P = 0.0, silicate = 0.0, phosphate = 0.0), measurements = (pH = 0.0, pCO₂ = 0.0))), filtered_data)
+    d::Vector{@NamedTuple{values ::@NamedTuple{lat::Float64, lon::Float64, depth::Float64, T::Float64, S::Float64, DIC::Float64, Alk::Float64, P::Float64, silicate::Float64, phosphate::Float64}, measurements::@NamedTuple{pH::Float64, pCO₂::Float64}}} = dr
+    return d
     
 end
+

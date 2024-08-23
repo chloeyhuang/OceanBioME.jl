@@ -153,23 +153,27 @@ end
 end
 
 #   set model for carbon chemistry; takes u as a list because nested NamedTuples are annoying to work with 
-@inline function set_model(; u, excluded_vars, return_model = true)
+@inline function set_model(; u, excluded_vars, excluded_eqns, return_model = true)
     i = 1
     vals = []
     eqc_names = (:K0, :K1, :K2, :KB, :KW, :KS, :KF, :KP1, :KP2, :KP3, :KSi)
+    eqc_modified = setdiff(eqc_names, excluded_eqns)
 
     getfn(x) = getfield(Main, x)
     
-    for j in 1:length(eqc_names)
-        c_name = eqc_names[j]
+    for c_name in eqc_names
         c = getfn(c_name)
-        
-        names = keys(get_params(c(); excluded = excluded_vars))
-        len = length(names)
-        ilen = i + len - 1
-        new_c = NamedTuple{names}(Tuple(u[i:ilen]))
-        i = ilen + 1
-        push!(vals, new_c)
+        if c_name ∈ excluded_eqns
+            df = get_params(c())
+            push!(vals, df)
+        else
+            names = keys(get_params(c(); excluded = excluded_vars))
+            len = length(names)
+            ilen = i + len - 1
+            new_c = NamedTuple{names}(Tuple(u[i:ilen]))
+            i = ilen + 1
+            push!(vals, new_c)
+        end
     end
     new_eqc = NamedTuple{eqc_names}(Tuple(vals))
     if return_model == true 

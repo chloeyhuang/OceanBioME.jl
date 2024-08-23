@@ -14,14 +14,15 @@ using ProfileView, BenchmarkTools
 using EnsembleKalmanProcesses
 using EnsembleKalmanProcesses.ParameterDistributions
 
-include("PZ.jl") # Include the functions defined in PZ.jl
-include("EKPUtils_fs.jl") #Includes G function + other required 
+include("PZ.jl")
+include("EKPUtils_fs.jl") 
+include("FastSimulations.jl")
 
 year = years = 365day
 const EKP = EnsembleKalmanProcesses
 
 #config for EKP, prior noise / stds proportional to mean guesses
-prior_noise = 0.3
+prior_noise = 0.1
 observation_noise = 0.001
 priorstds = 0.3
 
@@ -42,8 +43,8 @@ function G(model; data = nothing, Δt = 0.05, stop_time = 50.0)
             push!(observations, TS_max - TS_min, TS_rms, TS_end, T_max)
         end
     end
-    # observations returned: end - start, rms, last point of timeseries
-    #println(observations)
+    # observations returned: max - min, rms, last point of timeseries
+    # println(observations)
     return observations
 end
 
@@ -187,10 +188,10 @@ param_names_pz = [
     :light_decay_length
     ]
 #
-true_bgc = npzd_model.biogeochemistry 
-true_model = npzd_model
-param_names = param_names_npzd
-constraints = NPZD_lims
+true_bgc = LOBSTER_model.biogeochemistry 
+true_model = LOBSTER_model
+param_names = param_names_LOBSTER
+#constraints = NPZD_lims
 
 param_true = values(get_params(true_bgc; params = param_names, float_only = false))
 dim_input = length(param_true) # dimension of input
@@ -202,25 +203,25 @@ prior_offset = MvNormal(zeros(dim_input), prior_cov)
 
  #guesses a random prior mean which is a mvn with mean true params
 prior_mean = param_true .+ rand(prior_offset)
-
-for key in keys(constraints)
-    idx = findfirst(isequal(key), param_names)
-    val = abs(prior_mean[idx])
-    lmin = constraints[key][1]
-    lmax = constraints[key][2]
-    if val < lmin 
-        prior_mean[idx] = lmin + min(abs(lmin - val), abs((lmax - lmin)^2/(lmin-val)))
-    elseif val > lmax
-        prior_mean[idx] = lmax - min(abs(val-lmax), abs((lmax-lmin)^2/(val-lmax)))
+if isdefined(Main, :constraints)
+    for key in keys(constraints)
+        idx = findfirst(isequal(key), param_names)
+        val = abs(prior_mean[idx])
+        lmin = constraints[key][1]
+        lmax = constraints[key][2]
+        if val < lmin 
+            prior_mean[idx] = lmin + min(abs(lmin - val), abs((lmax - lmin)^2/(lmin-val)))
+        elseif val > lmax
+            prior_mean[idx] = lmax - min(abs(val-lmax), abs((lmax-lmin)^2/(val-lmax)))
+        end
     end
 end
-
 #prior_mean = [1.52051e-6, 8.61683e-6, 1.38137, 2.79668e-7,6.6611e-8,3.90374e-5, 0.439785, 0.885452,1.02191e-7, 3.38861e-6, 1.08577e-6]
 prior_std = priorstds*[prior_mean[i] for i in 1:length(param_true)]
 
 #####################
 # declare EKP object with relevant parameters
-"""
+#=
 PZEKP = EKPObject(pz_model, G; 
             Δt = 0.05, 
             stop_time = 50.0, 
@@ -231,7 +232,7 @@ PZEKP = EKPObject(pz_model, G;
 
             
 ######
-"""
+
 
 NPZDEKP = EKPObject(; 
                 model = npzd_model,
@@ -244,10 +245,9 @@ NPZDEKP = EKPObject(;
                 prior_std = prior_std,
                 constraints = constraints
 )
+=#
 
-"""          
-######
-LOBSTEREKP = EKPObject;
+LOBSTEREKP = EKPObject(;
             model = LOBSTER_model, 
             G = G,
             Δt = 30minutes, 
@@ -256,7 +256,7 @@ LOBSTEREKP = EKPObject;
             iterations = 12, 
             prior_mean = prior_mean, 
             prior_std = prior_std)
-"""
+
 #######################
 
 function run_ekp(obj::EKPObject)
@@ -286,8 +286,8 @@ function run_ekp(obj::EKPObject)
     display(pairs(NamedTuple{Tuple(param_names)}(param_true)))
 
     println("------")
-    println("\ninitial params")
-    display(pairs(NamedTuple{Tuple(param_names)}(prior_mean)))
+    #println("\ninitial params")
+    #display(pairs(NamedTuple{Tuple(param_names)}(prior_mean)))
     println("\nfinal params")
     display(pairs(best_params))
     println("------")
@@ -297,11 +297,11 @@ function run_ekp(obj::EKPObject)
     println("------")
 
     #plots true vs estimated final result
-    vals = RunBoxModel(true_model; Δt = obj.Δt, stop_time = 10*obj.stop_time)
+    vals = RunBoxModel(true_model; Δt = obj.Δt, stop_time = 5*obj.stop_time)
     times = vals[1]
     timeseries = vals[2]
 
-    timeseries_est = RunBoxModel(best_model; Δt = obj.Δt, stop_time = 10*obj.stop_time)[2]
+    timeseries_est = RunBoxModel(best_model; Δt = obj.Δt, stop_time = 5*obj.stop_time)[2]
 
     println("\ntotal time elapsed: " * string(elapsed))
 
@@ -315,4 +315,4 @@ println("================\n")
 #truth = generate_data(NPZDEKP, param_true, 100, observation_noise)
 #result = optimise_parameters!(NPZDEKP, truth)
 
-run_ekp(NPZDEKP)
+run_ekp(LOBSTEREKP)
