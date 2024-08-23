@@ -24,6 +24,11 @@ build
 examples/OceanBioME_example_data/*
 examples/OceanBioME_example_data
 output
+output/*
+ekp/archive
+ekp/archive/*
+FastSimulations.jl
+
 # Checkpointer model serialization
 *.jlser
 *.jld
