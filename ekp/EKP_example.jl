@@ -1,5 +1,4 @@
 using OceanBioME, Oceananigans
-import OceanBioME: BoxModelGrid
 using OceanBioME.Models: NPZDModel, LOBSTERModel
 using Oceananigans.Units
 using Oceananigans.Fields: FunctionField
@@ -14,12 +13,23 @@ using ProfileView, BenchmarkTools
 using EnsembleKalmanProcesses
 using EnsembleKalmanProcesses.ParameterDistributions
 
-include("PZ.jl")
-include("EKPUtils_fs.jl") 
+include("EKPUtils.jl")
+include("archive/PZ.jl")
 include("FastSimulations.jl")
 
+#=   
+-   for the moment this still uses a weird timestepper for the BoxModel in FastSimulations.jl but can be easily 
+    changed when defining G
+-   the timestepper is fast but should use the new timestepper which is only slightly slower / the same specified
+
+-   otherwise require defining two functions: 
+    -   G(model; data, Δt, stop_time)
+    -   generate_data (returns ObservationSeries)
+-   PZ.jl is included because I was mainly testing with that at the very start 
+    and now have something defined in Utils
+=#
+
 year = years = 365day
-const EKP = EnsembleKalmanProcesses
 
 #config for EKP, prior noise / stds proportional to mean guesses
 prior_noise = 0.1
@@ -63,6 +73,7 @@ function G_single(times, timeseries, tracer)
     #println(observations)
     return observations
 end
+
 G_single(times, timeseries) = G_single(times, timeseries, :P)
 
 function RunBoxModel(m; Δt = 0.05, stop_time = 50) #runs a box model; takes the model as values and returns the timeseries
@@ -91,7 +102,6 @@ function RunBoxModel(m; Δt = 0.05, stop_time = 50) #runs a box model; takes the
     
     return times, timeseries
 end
-
  
 function generate_data(obj::EKPObject, true_params, n_samples::Int64, noise) #generates data from truth model with added noise
     @info "Generating samples..."
@@ -128,7 +138,6 @@ PAR_func(t) = PAR⁰(t) * exp(0.2z) # Modify the PAR based on the nominal depth 
 clock = Clock(time = Float64(0))
 grid = BoxModelGrid()
 PAR = FunctionField{Center, Center, Center}(PAR_func, grid; clock)
-
 
 LOBSTER_bgc = LOBSTER(; grid = BoxModelGrid(), light_attenuation_model = PrescribedPhotosyntheticallyActiveRadiation(PAR))
 LOBSTER_model = BoxModel(; biogeochemistry = LOBSTER_bgc, clock)
@@ -253,66 +262,55 @@ LOBSTEREKP = EKPObject(;
             Δt = 30minutes, 
             stop_time = 30000minutes, 
             mutable_vars = param_names_LOBSTER, 
-            iterations = 12, 
+            iterations = 15, 
             prior_mean = prior_mean, 
             prior_std = prior_std)
 
 #######################
 
-function run_ekp(obj::EKPObject)
-    #generate 'truth' data with noise 
-    start_time = now()
-    truth = generate_data(obj, param_true, 200, observation_noise)
-
-    ######################
-
-    EKP_result = optimise_parameters!(obj, truth)
-
-    end_time = now()
-    elapsed = end_time - start_time
-
-    ##################
-    final_ensemble = EKP_result.final_ensemble
-    best_params = EKP_result.best_params
-    best_model = EKP_result.best_model
-    error = EKP_result.errors
-    prior_mean = obj.unparameterised_prior.mean
-    final_err = EKP_result.final_error
-
-    println("------")
-    println("\nensemble size")
-    println(size(final_ensemble)[2])
-    println("\ntrue params")
-    display(pairs(NamedTuple{Tuple(param_names)}(param_true)))
-
-    println("------")
-    #println("\ninitial params")
-    #display(pairs(NamedTuple{Tuple(param_names)}(prior_mean)))
-    println("\nfinal params")
-    display(pairs(best_params))
-    println("------")
-    println("\nfinal error: " * string(final_err))
-    println("\nstd of error in each parameter")
-    display(pairs(error))
-    println("------")
-
-    #plots true vs estimated final result
-    vals = RunBoxModel(true_model; Δt = obj.Δt, stop_time = 5*obj.stop_time)
-    times = vals[1]
-    timeseries = vals[2]
-
-    timeseries_est = RunBoxModel(best_model; Δt = obj.Δt, stop_time = 5*obj.stop_time)[2]
-
-    println("\ntotal time elapsed: " * string(elapsed))
-
-    display(plot_timeseries(times, 
-                            remove_prescribed_tracers(true_model, timeseries), 
-                            remove_prescribed_tracers(best_model, timeseries_est)))
-end
-
 println("================\n")
+#generate 'truth' data with noise 
+start_time = now()
+truth = generate_data(LOBSTEREKP, param_true, 200, observation_noise)
+EKP_result = optimise_parameters!(LOBSTEREKP, truth)
 
-#truth = generate_data(NPZDEKP, param_true, 100, observation_noise)
-#result = optimise_parameters!(NPZDEKP, truth)
+end_time = now()
+elapsed = end_time - start_time
 
-run_ekp(LOBSTEREKP)
+##################
+final_ensemble = EKP_result.final_ensemble
+best_params = EKP_result.best_params
+best_model = EKP_result.best_model
+error = EKP_result.errors
+prior_mean = LOBSTEREKP.unparameterised_prior.mean
+final_err = EKP_result.final_error
+
+println("------")
+println("\nensemble size")
+println(size(final_ensemble)[2])
+println("\ntrue params")
+display(pairs(NamedTuple{Tuple(param_names)}(param_true)))
+
+println("------")
+#println("\ninitial params")
+#display(pairs(NamedTuple{Tuple(param_names)}(prior_mean)))
+println("\nfinal params")
+display(pairs(best_params))
+println("------")
+println("\nfinal error: " * string(final_err))
+println("\nstd of error in each parameter")
+display(pairs(error))
+println("------")
+
+#plots true vs estimated final result
+vals = RunBoxModel(true_model; Δt = LOBSTEREKP.Δt, stop_time = 5*LOBSTEREKP.stop_time)
+times = vals[1]
+timeseries = vals[2]
+
+timeseries_est = RunBoxModel(best_model; Δt = LOBSTEREKP.Δt, stop_time = 5*LOBSTEREKP.stop_time)[2]
+
+println("\ntotal time elapsed: " * string(elapsed))
+
+display(plot_timeseries(times, 
+                        remove_prescribed_tracers(true_model, timeseries), 
+                        remove_prescribed_tracers(best_model, timeseries_est)))

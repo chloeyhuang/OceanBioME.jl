@@ -11,14 +11,10 @@ using ProfileView, BenchmarkTools
 using EnsembleKalmanProcesses
 using EnsembleKalmanProcesses.ParameterDistributions
 
-const EKP = EnsembleKalmanProcesses
-
-#include("EKPUtils_fs.jl")
+include("EKPUtils.jl")
 include("glodap_cleaned_data.jl")
 
-using .EKPUtils
-
-function generate_truth(obj::Main.EKPUtils.EKPObject, n_samples, G)
+function generate_truth(obj::EKPObject, n_samples, G)
     @info "Generating samples..."
     start_t = now()
     
@@ -182,7 +178,7 @@ prior_std = zeroinfcheck.(abs.(priorstds .* prior_mean), priorstds)
 
 #dt = sample(d, 800; replace = false)
 
-cc_ekp = EKPUtils.CarbonChemistryEKPObject(; G = G_model, 
+cc_ekp = CarbonChemistryEKPObject(; G = G_model, 
                                     data = d,
                                     excluded_vars,
                                     excluded_eqns,
@@ -195,7 +191,7 @@ truth = generate_truth(cc_ekp, 300, G)
 
 println("-------------")
 
-result = EKPUtils.optimise_parameters!(cc_ekp, truth)
+result = optimise_parameters!(cc_ekp, truth)
 m = result.best_model
 mb = result.final_model
 

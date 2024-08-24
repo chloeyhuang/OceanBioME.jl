@@ -27,7 +27,6 @@ output
 output/*
 ekp/archive
 ekp/archive/*
-FastSimulations.jl
 
 # Checkpointer model serialization
 *.jlser

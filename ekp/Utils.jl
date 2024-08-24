@@ -1,7 +1,3 @@
-using Plots
-using OceanBioME.Models: teos10_density, teos10_polynomial_approximation
-using OceanBioME.Models.CarbonChemistryModel: K0, K1, K2, KB, KW, KS, KF, KP1, KP2, KP3, KSi
-
 #   gets the parameter names and values in a NamedTuple (doesn't work with nested NamedTuples)
 @inline function get_params(bgc; params = nothing, excluded = nothing, float_only = true)
     T = bgc
@@ -153,7 +149,7 @@ end
 end
 
 #   set model for carbon chemistry; takes u as a list because nested NamedTuples are annoying to work with 
-@inline function set_model(; u, excluded_vars, excluded_eqns, return_model = true)
+@inline function set_model_cc(; u, excluded_vars, excluded_eqns, return_model = true)
     i = 1
     vals = []
     eqc_names = (:K0, :K1, :K2, :KB, :KW, :KS, :KF, :KP1, :KP2, :KP3, :KSi)
@@ -243,10 +239,10 @@ function plot_timeseries(times, timeseries, timeseries_est)
     tracers = get_tracers()
     plot_array = []
     for key in tracers
-        push!(plot_array, plot(times, [timeseries[key] timeseries_est[key]], xlabel = "time", label = [String(key) String(key) * " est. "]))
+        push!(plot_array, Plots.plot(times, [timeseries[key] timeseries_est[key]], xlabel = "time", label = [String(key) String(key) * " est. "]))
     end
     
-    return plot(plot_array..., size = (1200, 200*length(keys(tracers))+100), layout = (length(tracers), 1))
+    return Plots.plot(plot_array..., size = (1200, 200*length(keys(tracers))+100), layout = (length(tracers), 1))
 end
 
 #scales a list of numbers to something between 1 and 10 and returns the amount scaled by as powers of 10
