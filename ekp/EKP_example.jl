@@ -34,7 +34,7 @@ year = years = 365day
 #config for EKP, prior noise / stds proportional to mean guesses
 prior_noise = 0.1
 observation_noise = 0.001
-priorstds = 0.3
+priorstds = 0.2
 
 function G(model; data = nothing, Δt = 0.05, stop_time = 50.0)
     out = RunBoxModel(model; Δt, stop_time)
@@ -79,6 +79,7 @@ G_single(times, timeseries) = G_single(times, timeseries, :P)
 function RunBoxModel(m; Δt = 0.05, stop_time = 50) #runs a box model; takes the model as values and returns the timeseries
     model = m
     output_path = pwd() * "/output/"*string(get_bgc(model)) * "_output.jld2"
+    
     # Runs simulation 
     simulation = FastSimulation(model; Δt = Δt, stop_time = stop_time)
     run!(simulation, save_interval = 1, feedback_interval = Inf, save = SaveBoxModel(output_path), verbose = false)
@@ -89,7 +90,7 @@ function RunBoxModel(m; Δt = 0.05, stop_time = 50) #runs a box model; takes the
     rounding = length(string(simulation.Δt))    
 
     times_u = parse.(Float64, keys(file["fields"]))
-    times = [round(times_u[i]; digits = rounding) for i in 1:length(times_u)]
+    times = round.(times_u; digits = rounding)
 
     timeseries = NamedTuple{vars}(ntuple(t -> zeros(length(times_u)), length(vars)))
     for (idx, time) in enumerate(times_u)
@@ -103,7 +104,8 @@ function RunBoxModel(m; Δt = 0.05, stop_time = 50) #runs a box model; takes the
     return times, timeseries
 end
  
-function generate_data(obj::EKPObject, true_params, n_samples::Int64, noise) #generates data from truth model with added noise
+#  generates data from truth model with added noise
+function generate_data(obj::EKPObject, true_params, n_samples::Int64, noise)
     @info "Generating samples..."
     start_t = now()
 
@@ -130,7 +132,7 @@ function generate_data(obj::EKPObject, true_params, n_samples::Int64, noise) #ge
     )
 end
 
-#config for models
+#   config for models
 PAR⁰(t) = 60 * (1 - cos((t + 15days) * 2π / year)) * (1 / (1 + 0.2 * exp(-((mod(t, year) - 200days) / 50days)^2))) + 2
 z = -10 # specify the nominal depth of the box for the PAR profile
 PAR_func(t) = PAR⁰(t) * exp(0.2z) # Modify the PAR based on the nominal depth and exponential decay
@@ -184,34 +186,22 @@ param_names_npzd = [
 ]
 NPZD_lims = (assimulation_efficiency = [0, 1],)
 
-#
-pz_bgc = PhytoplanktonZooplankton()
-pz_model = BoxModel(; biogeochemistry = pz_bgc)
-set!(pz_model, P = 0.1, Z = 0.5)
-
-param_names_pz = [
-    :phytoplankton_growth_rate,
-    :grazing_rate,
-    :grazing_efficiency,
-    :zooplankton_mortality_rate,
-    :light_decay_length
-    ]
-#
-true_bgc = LOBSTER_model.biogeochemistry 
-true_model = LOBSTER_model
-param_names = param_names_LOBSTER
-#constraints = NPZD_lims
+true_bgc = npzd_bgc
+true_model = npzd_model
+param_names = param_names_npzd
+constraints = NPZD_lims
 
 param_true = values(get_params(true_bgc; params = param_names, float_only = false))
 dim_input = length(param_true) # dimension of input
 
 ######################
-#generate a mvn for the prior guess
+#   generates a mvn for the prior guess
 prior_cov = prior_noise^2 * Diagonal([i^2 for i in param_true])
 prior_offset = MvNormal(zeros(dim_input), prior_cov)
 
- #guesses a random prior mean which is a mvn with mean true params
+#   guesses a random prior mean which is a mvn with mean true params and checks that it is within the bounds
 prior_mean = param_true .+ rand(prior_offset)
+
 if isdefined(Main, :constraints)
     for key in keys(constraints)
         idx = findfirst(isequal(key), param_names)
@@ -225,23 +215,11 @@ if isdefined(Main, :constraints)
         end
     end
 end
+
 #prior_mean = [1.52051e-6, 8.61683e-6, 1.38137, 2.79668e-7,6.6611e-8,3.90374e-5, 0.439785, 0.885452,1.02191e-7, 3.38861e-6, 1.08577e-6]
-prior_std = priorstds*[prior_mean[i] for i in 1:length(param_true)]
+prior_std = priorstds .* prior_mean
 
-#####################
-# declare EKP object with relevant parameters
-#=
-PZEKP = EKPObject(pz_model, G; 
-            Δt = 0.05, 
-            stop_time = 50.0, 
-            mutable_vars = param_names_pz, 
-            iterations = 12, 
-            prior_mean = prior_mean, 
-            prior_std = prior_std)
-
-            
-######
-
+#   declare EKP object with relevant parameters
 
 NPZDEKP = EKPObject(; 
                 model = npzd_model,
@@ -254,7 +232,7 @@ NPZDEKP = EKPObject(;
                 prior_std = prior_std,
                 constraints = constraints
 )
-=#
+#=
 
 LOBSTEREKP = EKPObject(;
             model = LOBSTER_model, 
@@ -262,29 +240,29 @@ LOBSTEREKP = EKPObject(;
             Δt = 30minutes, 
             stop_time = 30000minutes, 
             mutable_vars = param_names_LOBSTER, 
-            iterations = 15, 
+            iterations = 10, 
             prior_mean = prior_mean, 
             prior_std = prior_std)
-
+=#
 #######################
 
-println("================\n")
 #generate 'truth' data with noise 
 start_time = now()
-truth = generate_data(LOBSTEREKP, param_true, 200, observation_noise)
-EKP_result = optimise_parameters!(LOBSTEREKP, truth)
+truth = generate_data(NPZDEKP, param_true, 200, observation_noise)
+EKP_result = optimise_parameters!(NPZDEKP, truth)
 
 end_time = now()
 elapsed = end_time - start_time
 
-##################
+#   display results
 final_ensemble = EKP_result.final_ensemble
 best_params = EKP_result.best_params
 best_model = EKP_result.best_model
 error = EKP_result.errors
-prior_mean = LOBSTEREKP.unparameterised_prior.mean
+prior_mean = NPZDEKP.unparameterised_prior.mean
 final_err = EKP_result.final_error
 
+#=
 println("------")
 println("\nensemble size")
 println(size(final_ensemble)[2])
@@ -302,12 +280,14 @@ println("\nstd of error in each parameter")
 display(pairs(error))
 println("------")
 
+=#
+
 #plots true vs estimated final result
-vals = RunBoxModel(true_model; Δt = LOBSTEREKP.Δt, stop_time = 5*LOBSTEREKP.stop_time)
+vals = RunBoxModel(true_model; Δt = NPZDEKP.Δt, stop_time = 5*NPZDEKP.stop_time)
 times = vals[1]
 timeseries = vals[2]
 
-timeseries_est = RunBoxModel(best_model; Δt = LOBSTEREKP.Δt, stop_time = 5*LOBSTEREKP.stop_time)[2]
+timeseries_est = RunBoxModel(best_model; Δt = NPZDEKP.Δt, stop_time = 5*NPZDEKP.stop_time)[2]
 
 println("\ntotal time elapsed: " * string(elapsed))
 

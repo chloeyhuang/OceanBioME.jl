@@ -1,10 +1,13 @@
+#   some utility functions that make manipulating the models easier
+
 #   gets the parameter names and values in a NamedTuple (doesn't work with nested NamedTuples)
+#   this is written kind of terribly
 @inline function get_params(bgc; params = nothing, excluded = nothing, float_only = true)
     T = bgc
     if isdefined(bgc, :underlying_biogeochemistry) == true
         T = bgc.underlying_biogeochemistry
     end
-    param_names = fieldnames(typeof(T))
+    param_names = propertynames(T)
     param_vals = []
 
     if params !== nothing
@@ -52,6 +55,7 @@
 
     return NamedTuple{Tuple(param_names)}(Tuple(param_vals))
 end
+
 #   returns bgc name as a callable function
 @inline function get_bgc(model)
     T = model
@@ -86,6 +90,7 @@ end
     bgc_vars = NamedTuple{allfields}(Tuple(list))
     return F(bgc_vars)
 end
+
 #   sets the biogeochemistry with the params as per the NamedTuple kwarg params
 @inline function set_bgc(bgc; grid, params::NamedTuple) 
     bgc_underlying = bgc.underlying_biogeochemistry
@@ -125,8 +130,12 @@ end
 
     new_bgc = 0
     
-    if typeof(model.biogeochemistry) <: PhytoplanktonZooplankton{}
-        new_bgc = set_bgc(bgc, params)
+    if isdefined(model.biogeochemistry, :light_attenuation) == false
+        try 
+            new_bgc = set_bgc(bgc, params)
+        catch
+            throw(ArgumentError.("Model specified is not compatible."))
+        end
     else
         new_bgc = set_bgc(bgc; grid = grid, params = params)
     end
@@ -153,7 +162,6 @@ end
     i = 1
     vals = []
     eqc_names = (:K0, :K1, :K2, :KB, :KW, :KS, :KF, :KP1, :KP2, :KP3, :KSi)
-    eqc_modified = setdiff(eqc_names, excluded_eqns)
 
     getfn(x) = getfield(Main, x)
     
@@ -216,14 +224,7 @@ end
 
 
 ##################################
-# some useful util functions
-
-# generate a random cov matrix 
-function rand_cov(n::Int)
-    X = rand(n,n)
-    A = X'*X
-    return A
-end
+# some small util functions
 
 #plots two timeseries
 function plot_timeseries(times, timeseries, timeseries_est) 
@@ -246,21 +247,22 @@ function plot_timeseries(times, timeseries, timeseries_est)
 end
 
 #scales a list of numbers to something between 1 and 10 and returns the amount scaled by as powers of 10
-function scale_parameters(list) 
+@inline function scale_parameters(list) 
     scaling = -floor.(log10.(abs.(list)))
     scaled_list = nancheck.(list .* 10.0.^(scaling))
     return scaled_list, scaling
 end
 
 #scales list with the provided scaling as powers of 10
-function scale_list(list, scaling) 
+@inline function scale_list(list, scaling) 
     if length(list) !== length(scaling)
-        throw("scaling failed: length of list and scaling arrays not equal")
+        throw("Scaling failed: length of list and scaling arrays not equal. \n 
+        Length of list is " * string(length(list) * " while length of scaling is "* string(length(scaling))))
     end
     return nancheck.(list.* 10.0.^(scaling))
 end
 
-function nancheck(x) 
+@inline function nancheck(x) 
     if isnan(x)
         return 0.0
     else 
@@ -268,7 +270,7 @@ function nancheck(x)
     end
 end
 
-function zeroinfcheck(x, a = 1.0)
+@inline function zeroinfcheck(x, a = 1.0)
     if iszero(x) || !isfinite(x)
         return a
     else
@@ -276,7 +278,7 @@ function zeroinfcheck(x, a = 1.0)
     end
 end
 
-function negcheck(x, a = 9999999999.9)
+@inline function negcheck(x, a = 9999999999.9)
     if x > 0 
         return x
     else 
@@ -288,8 +290,8 @@ end
     return Base.structdiff(nt, NamedTuple{list})
 end
 
-#removes the prescribed tracers (:PAR, :T) from timeseries; works for OceanBioME 0.10.5+ 
-function remove_prescribed_tracers(m, tseries) 
+#   removes the prescribed tracers (:PAR, :T) from timeseries; works for OceanBioME 0.10.5+ 
+@inline function remove_prescribed_tracers(m, tseries) 
     PT = keys(m.prescribed_tracers)
     tnames = filter(x -> x ∉ PT, keys(tseries)) 
     timeseries = NamedTuple{tnames}((getproperty(tseries, name) for name in tnames))

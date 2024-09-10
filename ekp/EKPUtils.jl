@@ -15,7 +15,6 @@ using Dates: now
 
 include("Utils.jl")
 include("CarbonChemistry_utils.jl")
-include("archive/PZ.jl")
 
 const EKP = EnsembleKalmanProcesses
 
@@ -29,8 +28,7 @@ const EKP = EnsembleKalmanProcesses
     format/processing of the raw data (such as measurements made) without input from the model
 
 -   there's still some jank regarding how clean the functions are due to the difference between CarbonChemistry and 
-    other models (eg. the set_model function will return a method error/undefined error if I define it to have 
-    two different methods for CC and normal models) but will hopefully fix
+    other models but due to how differently the cc model work compared to the other models, will leave for now
 =#
 
 # requires G as a function of the model, with Δt, stop_time and also optionally data
@@ -74,15 +72,15 @@ function calculate_observations_cc(u, G; data = nothing, input_scaling, output_s
             return scale_list(G(model; data), output_scaling)
         end
     catch e
-        @error e
         @warn "params returned a root error in the CarbonChemistry model, returned NaN to trigger failure handler" 
+        @error e
         return NaN
     end
 end
 
 function calculate_observations_batch(u, G, batch; data = nothing, input_scaling, output_scaling, excluded_vars)
     rescaled_u = scale_list(u, -input_scaling)
-    model = set_model(; u = rescaled_u, excluded_vars = excluded_vars, return_model = true)
+    model = set_model_cc(; u = rescaled_u, excluded_vars = excluded_vars, return_model = true)
 
     try
         if isnothing(output_scaling)
@@ -167,15 +165,13 @@ function EKPObject(;
 
     j(x) = join([String(x), initial_conditions[x]], " = ")
     init_cond_display = join([j(x) for x in keys(initial_conditions)], ", ")
-    @info "Initial conditions have been set. \nInitial conditions are \n" * init_cond_display
-    println("")
+    @info "Initial conditions have been set. \nInitial conditions are \n" * init_cond_display * "\n"
 
     @info "Simulation parameters are 
             \nΔt = " * string(Δt) * ", 
             \nstop time = " * string(stop_time) * ", 
             \niterations = " * string(iterations) * ", 
             \noptimised variables = " * join(mutable_vars, ", \n") * "\n"
-    println("")
 
     #   scales prior mean and std so that all prior means are between 1 and 10 and stds are some proportion of the means
     input_scaling = scale_parameters(zeroinfcheck.(prior_mean, 0))[2]
@@ -220,9 +216,9 @@ function EKPObject(;
                                             input_scaling = input_scaling,
                                             output_scaling = nothing)                                      
     output_scaling = scale_parameters(unscaled_output)[2]
-    @info "unscaled output: \n"  * join(round.(unscaled_output; digits = 4), ", ")
+    #@info "unscaled output: \n"  * join(round.(unscaled_output; digits = 4), ", ")
 
-    #defines functions so that they are only in terms of the model
+    #   defines functions so that they are only in terms of the model
     F(u)= calculate_observations(model, 
                                     NamedTuple{Tuple(mutable_vars)}(Tuple(u)), 
                                     G; 
@@ -349,6 +345,7 @@ function CarbonChemistryEKPObject(; G,
             output_scaling = [0 for i in output_scaling]
         end
         #@info "unscaled output: \n"  * join(round.(unscaled_output; digits = 4), ", ")
+        
         F(u) = calculate_observations_cc(u, G; 
                                         data,
                                         input_scaling,
@@ -435,7 +432,6 @@ function optimise_parameters!(obj::EKPObject, truth)
     end
     start_time = now()
 
-
     #   basic settings for EKP: picked α_reg = 1.0 and update_freq = 1 to minimise ensemble collapse / divergence
     α_reg =  1.0
     update_freq = 1
@@ -476,7 +472,7 @@ function optimise_parameters!(obj::EKPObject, truth)
     prior_dis = [constrained_gaussian("$i", 
                     scaled_mean[i], 
                     scaled_std[i], 
-                    scaled_left_lim[i], scaled_right_lim[i]) for i in 1:length(scaled_mean)]
+                    scaled_left_lim[i], scaled_right_lim[i]) for i in eachindex(scaled_mean)]
     prior = combine_distributions(prior_dis)
 
     #   finally runs EKP 
@@ -518,10 +514,6 @@ function optimise_parameters!(obj::EKPObject, truth)
             @info ("new min of " * string(min_err))
         end
     end
-    if err[end] > min_err
-        @info "returned params and eqc are not from the last iteration but instead the best (min err). " * 
-        "\n best params ehad error " * string(min_err)
-    end
 
     #   special case for CarbonChemistry model which has a different structure to set model / get params
     if typeof(obj.model) <: CarbonChemistry
@@ -533,7 +525,7 @@ function optimise_parameters!(obj::EKPObject, truth)
 
         final_eqc = set_model_simple(; u = final_params, return_model = true)
         final_params = set_model_simple(; u = final_params, return_model = false)
-        error_std = unscale_in([sqrt(final_cov[i, i]) for i in 1:dim_input])
+        error_std = unscale_in(sqrt.(diag(final_cov)))
         et = now()
         @info "total elapsed: " * string(et - st)
 
@@ -556,7 +548,7 @@ function optimise_parameters!(obj::EKPObject, truth)
 
         best = NamedTuple{Tuple(param_names)}((current_best))
         best_model = set_model(obj.model; params = best, initial_conditions = obj.initial_conditions)
-        error_std = unscale_in([sqrt(final_cov[i, i]) for i in 1:dim_input])
+        error_std = unscale_in(sqrt.(diag(final_cov)))
         errors = (NamedTuple{Tuple(param_names)}(Tuple(error_std)))
 
         et = now()

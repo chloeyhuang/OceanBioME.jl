@@ -33,24 +33,7 @@ function generate_truth(obj::EKPObject, n_samples, G)
 
     yt = Vector{Observation}(undef, n_samples)
 
-    #=
-    unscaled_cov = [1/n*vh,             # means for non error mean/var/rms
-                    vh, 
-                    vh, 
-                    1/n*vc, 
-                    vc, 
-                    vc, 
-                    sqrt(1/n^3*(0.01 * (6.63-vh-mh^2)^2 + 4n*vh*(vh+mh^2))),
-                    sqrt(1/n^3*(0.01 * (6.63-vc-mc^2)^2 + 4n*vc*(vc+mc^2))),
-                    75000.0]
-    
-    
-    =#
-    unscaled_cov = 1000* [1/pH_error, 
-                    1/pH_error,
-                    1/pCO₂_error,
-                    1/pCO₂_error,
-                    1/pCO₂_error]
+    unscaled_cov = 2000*[1, 1, 5, 5, 5]
     #   cov matrix of error
     Γ = diagm(scale_list(unscaled_cov, obj.output_scaling))
     
@@ -63,7 +46,6 @@ function generate_truth(obj::EKPObject, n_samples, G)
                     sqrt(1/n^3*(0.01 * (6.63-vc-mc^2)^2 + 4n*vc*(vc+mc^2)))]) 
     =#
 
-    display(Γ)
     Threads.@threads for i in 1:(n_samples)
         if i%50 == 0
             println(string("Reached ", i, " samples"))
@@ -112,6 +94,7 @@ end
     pH_MAE= mean(abs.(pH_error_v))
     pCO₂_MAE = mean(abs.(pCO₂_error_v))
 
+    #=
     pH_var_err = var(pH_error_v)
     pCO₂_var_err = var(pCO₂_error_v)
 
@@ -125,15 +108,9 @@ end
     pCO₂_mean = mean(pCO₂)
     pCO₂_var = var(pCO₂)
     pCO₂_iqr = iqr(pCO₂)
+    =#
 
-    pCO2_large_err_count = 0
-    for v in pCO₂_error_v
-        if abs(v) > 30 
-            pCO2_large_err_count += 1
-        end
-    end
-
-    #n = length(pH)
+    pCO2_large_err_count = sum(abs.(pCO₂_error_v) .> 30)
     pH_MSE =  mean(sum(abs2, (pH.-true_pH)))
     pCO₂_MSE = mean(sum(abs2, (pCO₂.-true_pCO₂)))
 
@@ -165,7 +142,7 @@ d = get_cleaned_data()
 
 raw_data = load_object("output/glodap_cleaned_data.jld2")
 
-priorstds = 0.001
+priorstds = 0.0003
 pH_error = 0.01
 pCO₂_error = 5.0 
 
@@ -189,17 +166,16 @@ cc_ekp = CarbonChemistryEKPObject(; G = G_model,
 
 truth = generate_truth(cc_ekp, 300, G)
 
-println("-------------")
-
 result = optimise_parameters!(cc_ekp, truth)
 m = result.best_model
 mb = result.final_model
 
 println("Original error:")
-get_model_error(CarbonChemistry(), d)
+get_model_error(CarbonChemistry(), d; verbose = true)
 
-display(plot_errors(d; model = mb, ylims = [-100, 100]))
-display(plot_errors(d; model = m, ylims = [-100, 100]))
+println("\nNew error:")
+display(plot_errors(d; model = m, ylims = [-100, 100], verbose = true))
 
-println("hello world!")
+display(plot_errors(d; ylims = [-100, 100]))
 
+println("")

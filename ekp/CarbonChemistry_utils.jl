@@ -22,11 +22,10 @@ using CairoMakie
                                             silicate::Float64, 
                                             phosphate::Float64}) = Base.structdiff(nt, NamedTuple{(:depth, :T, :P)})
 
-function get_model_error(model, data)
+function get_model_error(model, data; verbose = false)
     pH_err = []
     pCO₂_err = []
 
-    pco2_err_counter = 0
     for dp in data
         ph_conditions = filter_pH_fields(dp.values)
         pco2_conditions = filter_pCO2_fields(dp.values)
@@ -38,19 +37,19 @@ function get_model_error(model, data)
 
         push!(pH_err, phe)
         push!(pCO₂_err, pce)
-        if abs(pce) > 30
-            #println( model(; pco2_conditions..., T = 20, P = 0), " | " , pCO₂_glodap)
-            pco2_err_counter += 1
-        end
+        
     end
+
+    pco2_err_counter = sum(abs.(pCO₂_err) .> 30)
 
     pH_MSE = mean(sum(abs2, pH_err))
     pCO₂_MSE = mean(sum(abs2, pCO₂_err))
 
-    println("Number of points with pCO₂ error larger than 30: " * string(pco2_err_counter))
-    println("pH MSE: " * string(pH_MSE))
-    println("pCO₂ MSE: " * string(pCO₂_MSE))
-    println("------------")
+    if verbose == true
+        println("Number of points with pCO₂ error larger than 30: " * string(pco2_err_counter))
+        println("pH MSE: " * string(pH_MSE))
+        println("pCO₂ MSE: " * string(pCO₂_MSE))
+    end
     return (pH = pH_err, pCO₂ = pCO₂_err)
 end
 
@@ -61,7 +60,8 @@ function plot_errors(
     model = CarbonChemistry(),
     color_name = :S, 
     ylims = nothing, 
-    title = "Δ" * string(to_plot))
+    title = "Δ" * string(to_plot),
+    verbose = false)
 
     color_marker = [dp.values[color_name] for dp in data]
     fig = CairoMakie.Figure(; size=(1600,900))
@@ -76,7 +76,7 @@ function plot_errors(
     ax5 = CairoMakie.Axis(fig[2, 2], title = "S")
     ax6 = CairoMakie.Axis(fig[2, 3], title = "Depth")
 
-    error = get_model_error(model, data)[to_plot]
+    error = get_model_error(model, data; verbose)[to_plot]
 
     sc=CairoMakie.scatter!(ax, [dp.values.DIC for dp in data], error, markersize = 3, alpha = 0.5, color = color_marker)
     CairoMakie.scatter!(ax2, [dp.values.Alk for dp in data], error, markersize = 3, alpha = 0.5, color = color_marker)
